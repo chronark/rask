@@ -110,6 +110,34 @@ func TestParserRejectsMissingIntFlagValue(t *testing.T) {
 	}
 }
 
+func TestParserStringFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		value string
+		set   bool
+	}{
+		{name: "absent"},
+		{name: "equals", args: []string{"--shard=2/5"}, value: "2/5", set: true},
+		{name: "space", args: []string{"--shard", "3/7"}, value: "3/7", set: true},
+		{name: "empty", args: []string{"--shard="}, set: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &Command{Name: "rask", Flags: []Flag{String("shard", "package shard")}}
+			if err := cmd.Run(context.Background(), append([]string{"rask"}, tc.args...)); err != nil {
+				t.Fatal(err)
+			}
+			if cmd.String("shard") != tc.value || cmd.IsSet("shard") != tc.set {
+				t.Fatalf("value=%q set=%t, want %q %t", cmd.String("shard"), cmd.IsSet("shard"), tc.value, tc.set)
+			}
+		})
+	}
+	cmd := &Command{Name: "rask", Flags: []Flag{String("shard", "package shard")}}
+	if err := cmd.Run(context.Background(), []string{"rask", "--shard"}); err == nil {
+		t.Fatal("missing string value accepted")
+	}
+}
+
 func TestParserRoutesSubcommandBeforeCollectingArgs(t *testing.T) {
 	ran := ""
 	root := &Command{

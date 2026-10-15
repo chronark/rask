@@ -25,9 +25,11 @@ Options:
 | `--verbose` | Render passing and ignored test lines. |
 | `--no-cache` | Bypass cache reads for this run and refresh passing suites. |
 | `--concurrency` | Set how many stale suites run at once. `0` or unset uses automatic sizing. |
+| `--shard INDEX/COUNT` | Run one deterministic package shard. Indices start at 1; empty shards succeed. |
+| `--shard-timings FILE` | Balance `--shard` using a shared immutable JSON timing snapshot. |
 | `--version` | Print the rask version and exit before running tests. |
 
-rask always runs whole suites, always fails fast, and always randomizes order. Suites are scheduled in a randomized dependency-respecting order, and each stale suite runs `go test` with `-shuffle=on`. `--concurrency` controls how many suites are in flight at once — each in-flight suite is one bounded worker doing its cache check and, when stale, one suite-level `go test` process; it does not change intra-suite Go test behavior. When `--concurrency` is unset or `0`, rask uses `min(32, max(1, GOMAXPROCS-1))`. Explicit values must be between `1` and `32`. Failed suite output includes Go's `-test.shuffle <seed>` line when Go emits one, so a shuffled failure can be replayed directly with `go test -shuffle=<seed> <pkg>`. Filtered or customized runs such as `-run`, benchmarks, fuzzing, and coverage belong to plain `go test`. Unknown test flags are rejected with that hint.
+rask always runs whole suites and fails fast within each process. Without `--shard`, suites are scheduled in a randomized dependency-respecting order. Shards use canonical import-path order or longest-first snapshot order; see [Package sharding](../README.md#package-sharding) for the snapshot format and worker requirements. Each stale suite still runs `go test` with `-shuffle=on`. `--concurrency` controls how many suites are in flight at once — each in-flight suite is one bounded worker doing its cache check and, when stale, one suite-level `go test` process; it does not change intra-suite Go test behavior. When `--concurrency` is unset or `0`, rask uses `min(32, max(1, GOMAXPROCS-1))`. Explicit values must be between `1` and `32`. Failed suite output includes Go's `-test.shuffle <seed>` line when Go emits one, so a shuffled failure can be replayed directly with `go test -shuffle=<seed> <pkg>`. Filtered or customized runs such as `-run`, benchmarks, fuzzing, and coverage belong to plain `go test`. Unknown test flags are rejected with that hint.
 
 ## `rask why`
 

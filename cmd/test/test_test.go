@@ -719,6 +719,14 @@ func (f *fakeTool) ListPackages(_ context.Context, dir string, patterns []string
 	return f.selected, nil
 }
 
+func (f *fakeTool) ListDependencies(context.Context, string, []string) ([]gotool.Package, error) {
+	packages := append([]gotool.Package(nil), f.all...)
+	for _, local := range f.allByDir {
+		packages = append(packages, local...)
+	}
+	return packages, nil
+}
+
 // ListModules returns configured workspace modules for command tests.
 func (f *fakeTool) ListModules(context.Context, string) ([]gotool.Module, error) {
 	return f.modules, nil

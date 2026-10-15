@@ -21,7 +21,7 @@ func main() {
 	app := &cli.Command{
 		Name:        "rask",
 		Usage:       "Run Go tests with content-addressed result caching",
-		Description: "Testing takes package patterns plus -v/--verbose, --no-cache, --concurrency, and --version.",
+		Description: "Testing takes package patterns plus -v/--verbose, --no-cache, --concurrency, --shard, --shard-timings, and --version.",
 		Flags:       rootFlags,
 		Action: func(ctx context.Context, command *cli.Command) error {
 			if command.Bool("version") {
@@ -32,7 +32,7 @@ func main() {
 		},
 		AcceptsArgs:        true,
 		DefaultActionNames: []string{"test", "t"},
-		UnknownFlagHint:    "rask supports only -v/--verbose, --no-cache, --concurrency, and --version; use `go test` for other flags",
+		UnknownFlagHint:    "rask supports only -v/--verbose, --no-cache, --concurrency, --shard, --shard-timings, and --version; use `go test` for other flags",
 		Commands: []*cli.Command{
 			clean.Command(),
 			why.Command(),

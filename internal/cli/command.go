@@ -86,6 +86,20 @@ func (c *Command) Int(name string) int {
 	return 0
 }
 
+// String returns empty text for absent flags.
+func (c *Command) String(name string) string {
+	if flag, ok := c.flagMap[name].(*StringFlag); ok {
+		return flag.Value()
+	}
+	return ""
+}
+
+// IsSet reports whether a flag was explicitly provided.
+func (c *Command) IsSet(name string) bool {
+	flag, ok := c.flagMap[name]
+	return ok && flag.IsSet()
+}
+
 // Run executes the command with process-shaped arguments.
 func (c *Command) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {

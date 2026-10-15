@@ -41,6 +41,91 @@ func TestColdThenWarm(t *testing.T) {
 	assertContains(t, warm.stdout, "4 cached")
 }
 
+func TestJSONExecutionWithoutPreflight(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		flags    string
+		code     int
+		contains []string
+		absent   []string
+	}{
+		{name: "selected", flags: "-run=^TestSelected$", contains: []string{"TestSelected", "2 passed"}, absent: []string{"TestSkipped", "ExampleValue", "FuzzValue"}},
+		{name: "missing", flags: "-run=^TestMissing$", contains: []string{"0 passed"}, absent: []string{"TestSelected", "TestSkipped"}},
+		{name: "examples and fuzz", flags: "-run=^(TestSelected|TestSkipped|ExampleValue|FuzzValue)$", contains: []string{"TestSelected", "TestSkipped", "ExampleValue", "FuzzValue", "1 ignored"}},
+		{name: "failure", flags: "-run=^TestFailure$", code: 1, contains: []string{"TestFailure", "intentional failure"}},
+		{name: "timeout", flags: "-run=^TestTimeout$ -timeout=50ms", code: 1, contains: []string{"TestTimeout", "test timed out"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			module := scaffoldModule(t, packageSpec{name: "suite", test: testPass})
+			writeFile(t, module.dir, "suite/suite_test.go", `package suite
+
+import (
+	"fmt"
+	"os"
+	"testing"
+	"time"
+)
+
+func TestMain(m *testing.M) {
+	f, err := os.OpenFile("invocations", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil { panic(err) }
+	if _, err := f.WriteString("run\n"); err != nil { panic(err) }
+	if err := f.Close(); err != nil { panic(err) }
+	os.Exit(m.Run())
+}
+
+func TestSelected(t *testing.T) { t.Run("child", func(t *testing.T) {}) }
+func TestSkipped(t *testing.T) { t.Skip("intentional skip") }
+func TestFailure(t *testing.T) { t.Fatal("intentional failure") }
+func TestTimeout(t *testing.T) { time.Sleep(time.Second) }
+func ExampleValue() {
+	fmt.Println(Value())
+	// Output: 1
+}
+func FuzzValue(f *testing.F) {
+	f.Add(1)
+	f.Fuzz(func(t *testing.T, n int) {})
+}
+`)
+			env := cacheEnv(t.TempDir())
+			env["GOFLAGS"] = tc.flags
+			cold := runRask(t, module.dir, env, "-v", "./suite")
+			assertCode(t, cold, tc.code)
+			for _, want := range tc.contains {
+				assertContains(t, cold.stdout+cold.stderr, want)
+			}
+			for _, unwanted := range tc.absent {
+				assertNotContains(t, cold.stdout+cold.stderr, unwanted)
+			}
+			second := runRask(t, module.dir, env, "-v", "./suite")
+			assertCode(t, second, tc.code)
+			wantInvocations := "run\n"
+			if tc.code == 0 {
+				assertSuites(t, second.stdout, "Cached", "suite")
+			} else {
+				wantInvocations += "run\n"
+				assertNotContains(t, second.stdout, "Cached")
+			}
+			if tc.name == "selected" {
+				env["GOFLAGS"] = "-run=^TestSkipped$"
+				changed := runRask(t, module.dir, env, "-v", "./suite")
+				assertCode(t, changed, 0)
+				assertSuites(t, changed.stdout, "Passed", "suite")
+				assertContains(t, changed.stdout, "1 ignored")
+				assertNotContains(t, changed.stdout, "TestSelected")
+				wantInvocations += "run\n"
+			}
+			got, err := os.ReadFile(filepath.Join(module.dir, "suite", "invocations"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != wantInvocations {
+				t.Fatalf("TestMain invocations = %q, want %q", got, wantInvocations)
+			}
+		})
+	}
+}
+
 func TestEditInvalidation(t *testing.T) {
 	module := scaffoldModule(t, demoPackages(false)...)
 	cacheDir := t.TempDir()
@@ -51,6 +136,87 @@ func TestEditInvalidation(t *testing.T) {
 	assertSuites(t, result.stdout, "Passed", "dep", "dependent")
 	assertSuites(t, result.stdout, "Cached", "bystander")
 	assertNotContains(t, result.stdout, "Passed bystander")
+}
+
+func TestNarrowSelectionIgnoresUnrelatedPackages(t *testing.T) {
+	module := scaffoldModule(t,
+		packageSpec{name: "dep", test: testNone},
+		packageSpec{name: "middle", imports: []string{"dep"}, test: testNone},
+		packageSpec{name: "dependent", imports: []string{"middle"}, test: testPass},
+	)
+	writeFile(t, module.dir, "unrelated/broken.go", "package unrelated\nimport _ \"example.invalid/unavailable\"\n")
+	env := cacheEnv(t.TempDir())
+	env["GOPROXY"] = "off"
+	env["GOMODCACHE"] = t.TempDir()
+	cold := runRask(t, module.dir, env, "./dependent")
+	assertCode(t, cold, 0)
+	assertSuites(t, cold.stdout, "Passed", "dependent")
+	assertNotContains(t, cold.stdout, "Passed dep ")
+	assertSuites(t, runRask(t, filepath.Join(module.dir, "dependent"), env, "./...").stdout, "Cached", "dependent")
+	writeFile(t, module.dir, "unrelated/broken.go", "package unrelated\nfunc Broken( {\n")
+	assertSuites(t, runRask(t, module.dir, env, module.path+"/dependent").stdout, "Cached", "dependent")
+	full := runRask(t, module.dir, env, "./...")
+	assertCode(t, full, 1)
+	assertContains(t, full.stderr, "unrelated")
+	editDepSource(t, module)
+	changed := runRask(t, module.dir, env, "./dependent")
+	assertCode(t, changed, 0)
+	assertSuites(t, changed.stdout, "Passed", "dependent")
+	writeFile(t, module.dir, "dep/dep.go", "package dep\nfunc Value() int { return -10 }\n")
+	failed := runRask(t, module.dir, env, "./dependent")
+	assertCode(t, failed, 1)
+	assertContains(t, failed.stdout+failed.stderr, "bad value")
+	assertNotContains(t, failed.stdout, "Cached")
+}
+
+func TestNarrowSelectionInvalidatesLocalTestDependencies(t *testing.T) {
+	for _, workspace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("workspace=%t", workspace), func(t *testing.T) {
+			root := t.TempDir()
+			appDir := filepath.Join(root, "app")
+			goMod := "module example.test/app\n\ngo 1.25\nrequire example.test/dependency v0.0.0\n"
+			env := cacheEnv(t.TempDir())
+			env["GOPROXY"] = "off"
+			if workspace {
+				writeFile(t, root, "go.work", "go 1.27.1\nuse (\n./app\n./dependency\n)\n")
+				env["GOWORK"] = filepath.Join(root, "go.work")
+			} else {
+				goMod += "replace example.test/dependency => ../dependency\n"
+			}
+			writeFile(t, appDir, "go.mod", goMod)
+			writeFile(t, appDir, "api/api.go", "package api\nfunc Value() int { return 1 }\n")
+			writeFile(t, appDir, "api/api_test.go", `package api_test
+import (
+    "testing"
+    "example.test/app/helper"
+)
+func TestValue(t *testing.T) {
+    if helper.Value() != 1 { t.Fatal("dependency changed") }
+}
+`)
+			writeFile(t, appDir, "helper/helper.go", `package helper
+import (
+    "example.test/app/api"
+    "example.test/dependency"
+)
+func Value() int { return api.Value() + dependency.Value() - 1 }
+`)
+			writeFile(t, root, "dependency/go.mod", "module example.test/dependency\n\ngo 1.25\n")
+			writeFile(t, root, "dependency/dep.go", "package dependency\nfunc Value() int { return 1 }\n")
+			writeFile(t, root, "dependency/unrelated/bad.go", "package unrelated\nimport _ \"example.invalid/unavailable\"\n")
+			cold := runRask(t, appDir, env, "./api")
+			assertCode(t, cold, 0)
+			assertSuites(t, cold.stdout, "Passed", "api")
+			warm := runRask(t, appDir, env, "./api")
+			assertCode(t, warm, 0)
+			assertSuites(t, warm.stdout, "Cached", "api")
+			writeFile(t, root, "dependency/dep.go", "package dependency\nfunc Value() int { return 2 }\n")
+			changed := runRask(t, appDir, env, "./api")
+			assertCode(t, changed, 1)
+			assertContains(t, changed.stdout+changed.stderr, "dependency changed")
+			assertNotContains(t, changed.stdout, "Cached")
+		})
+	}
 }
 
 func TestFailFast(t *testing.T) {

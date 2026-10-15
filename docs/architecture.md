@@ -12,7 +12,7 @@ A run is a straight line down, two cache questions, and a frontend at the end.
                              ▼
                          open cache           disk dir + remote config
                              │
-                         discover              every package in the module
+                         discover              selected packages + dependencies
                              │
                         fingerprint            sources + dependency closure +
                              │                 toolchain → one digest per suite
@@ -41,10 +41,10 @@ A run is a straight line down, two cache questions, and a frontend at the end.
 
 `cmd/test` owns orchestration. At the command edge it loads process configuration once, resolves the current module, opens the cache with an explicit disk directory and remote tier, then runs one ordered flow:
 
-1. `discover.Packages(ctx, ...)` returns the full package universe in one batch.
-2. `fingerprint.Suites(ctx, ...)` returns selected suites and digests in one batch.
+1. `discover.Packages(ctx, ...)` returns selected packages and their local dependency closure in one batch.
+2. When `--shard` is set, `cmd/test` assigns canonical import paths to shards and marks only this shard's suites selected, retaining the full dependency graph. `fingerprint.Suites(ctx, ...)` returns selected suites and digests in one batch.
 3. The frontend goroutine starts and receives one run plan before workers start.
-4. One goroutine is launched per suite, with a semaphore bounding active workers.
+4. A semaphore admits suites in plan order before launching worker goroutines. Unsharded plans keep the randomized fingerprint order; shard plans use import-path order or longest-first snapshot order.
 5. Each worker checks the cache, executes one stale suite, writes or deletes cache state, and stores one indexed outcome.
 6. After `WaitGroup.Wait`, the command prunes the cache, folds outcomes into the summary, sends `EventSummary`, closes the event channel, and uses the frontend exit code.
 
@@ -78,11 +78,11 @@ The command creates one run-scoped child context after planning. Fail-fast and C
 
 ## Discovery
 
-Discovery needs the full local package closure so dependency hashes are correct. When patterns are exactly `./...`, one main-module `go list -json` call is enough. For narrower patterns, rask first lists the selected packages, then lists `./...` from the main module so fingerprinting still sees the closure.
+Discovery first resolves the requested patterns with `go list -json`. A second `go list -deps -json` starts from those packages and their `TestImports` and `XTestImports`. This includes transitive build dependencies of test-only helpers without loading the helpers' own test dependencies or synthetic test-package variants. Rask does not add a whole-module `./...` scan to a narrow selection.
 
-When `GOWORK` names an active workspace, discovery reads every module reported by `go list -m -json`. It also line-scans local filesystem `replace` directives in each known root's `go.mod`, follows those roots transitively, and lists each additional root with `go list ./...`. Additional roots feed fingerprints only; they are not selected as suites.
+When `GOWORK` names an active workspace, discovery reads every module reported by `go list -m -json`. It also follows local filesystem `replace` directives in each known root's `go.mod`. Only dependency packages inside these roots enter the fingerprint graph; packages in nested roots belong to the deepest matching root. Dependencies are not selected as suites. Module files and environment values remain part of the shared cache salt.
 
-Package `Error` and `Incomplete` fields fail the run even when `go list` exits zero. Syntax parsing adds a second guard so broken local files do not become green runs.
+Package `Error` and `Incomplete` fields fail the run even when `go list` exits zero. Syntax parsing adds a second guard for discovered local files. Errors in unrelated packages do not block a narrow selection; selecting `./...` still validates the whole selected tree.
 
 ## Fingerprints
 
@@ -96,12 +96,11 @@ The salt and retention details are in [Caching](caching.md).
 
 The worker count is `min(GOMAXPROCS-1, 32)`, with a minimum of one. Each stale suite runs:
 
-```sh
-go test -list '^Test' <package>
+```bash
 go test -json -count=1 -failfast -shuffle=on <package>
 ```
 
-The list command supplies the cosmetic per-suite total for the sticky progress region. It uses the same process-group cancellation and wait-delay rules as the streaming test process, with the suite stall watchdog as its timeout. List failures degrade to an unknown total and never fail the suite.
+There is no preliminary test listing or extra test-binary invocation. Test names and outcomes come from the JSON stream. Running progress shows an unknown total because tests that have not started cannot be counted, including tests omitted by selection or fail-fast.
 
 The JSON stream is folded into test outcomes, live completed-test progress, and bounded output. A test still in `run` when the suite completes or crashes is failed. Package output and build output are kept for diagnostics. Scanner lines are capped at 4 MiB, and the remaining stdout is always drained before `Wait` so a stopped scanner cannot deadlock the child.
 

@@ -350,6 +350,10 @@ func (f *fakeTool) ListPackages(context.Context, string, []string) ([]gotool.Pac
 	return nil, fmt.Errorf("unexpected ListPackages call")
 }
 
+func (f *fakeTool) ListDependencies(context.Context, string, []string) ([]gotool.Package, error) {
+	return nil, fmt.Errorf("unexpected ListDependencies call")
+}
+
 // ListModules returns configured workspace modules for fingerprint salt tests.
 func (f *fakeTool) ListModules(context.Context, string) ([]gotool.Module, error) {
 	return f.modules, nil

@@ -49,6 +49,7 @@ type testCommand struct {
 	patterns     []string
 	noCache      bool
 	concurrency  int
+	shard        shardOptions
 	frontend     *frontend.Frontend
 	executor     suiteExecutor
 	events       chan<- frontend.Event
@@ -83,6 +84,7 @@ type testArguments struct {
 
 	// concurrency fixes suite parallelism when users need deterministic process fan-out.
 	concurrency int
+	shard       shardOptions
 }
 
 // suiteCache is the cache behavior the test command needs for suites.
@@ -148,6 +150,8 @@ func Flags() []cli.Flag {
 		cli.Bool("verbose", "render passing and ignored test lines"),
 		cli.Bool("no-cache", "bypass cache reads and refresh passing suites"),
 		cli.Int("concurrency", "suite workers; 0 or unset uses automatic sizing"),
+		cli.String("shard", "run one package shard: INDEX/COUNT (one-based)"),
+		cli.String("shard-timings", "balance shards using a shared, immutable JSON timing snapshot"),
 	}
 }
 
@@ -194,6 +198,11 @@ func testArgumentsFromCommand(command *cli.Command) (testArguments, error) {
 	if parsed.concurrency > run.WorkerCountMax {
 		return testArguments{}, fmt.Errorf("--concurrency must be at most %d", run.WorkerCountMax)
 	}
+	shard, err := shardOptionsFromCommand(command)
+	if err != nil {
+		return testArguments{}, err
+	}
+	parsed.shard = shard
 	if len(parsed.patterns) == 0 {
 		parsed.patterns = []string{"./..."}
 	}
@@ -219,6 +228,7 @@ func newTestCommand(
 		ctx: ctx, tool: tool, module: module, patternDir: userDir,
 		resultCache: resultCache, patterns: parsed.patterns,
 		noCache: parsed.noCache, concurrency: parsed.concurrency,
+		shard:    parsed.shard,
 		frontend: ui, executor: run.NewExecutor(tool, module.Dir),
 		events: events, frontendDone: make(chan struct{}), startedAt: time.Now(),
 	}
@@ -252,12 +262,21 @@ func (c *testCommand) suites(packages []gotool.Package, previous error) ([]finge
 	if previous != nil {
 		return nil, nil
 	}
+	packages, err := c.shard.selectPackages(packages)
+	if err != nil {
+		return nil, err
+	}
 	suites, err := fingerprint.Suites(c.ctx, c.tool, c.module, packages)
 	if err != nil {
 		if c.ctx.Err() != nil {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if c.shard.count != 0 {
+		sort.Slice(suites, func(i, j int) bool {
+			return c.shard.less(suites[i].Package.ImportPath, suites[j].Package.ImportPath)
+		})
 	}
 	return suites, nil
 }
@@ -286,15 +305,22 @@ func (c *testCommand) sendRunPlan(suites []fingerprint.Suite) {
 	}
 }
 
-// runSuites fans out one goroutine per suite while the semaphore bounds processes.
 func (c *testCommand) runSuites(suites []fingerprint.Suite) []suiteOutcome {
 	c.runCtx, c.cancelRun = context.WithCancel(c.ctx)
 	defer c.cancelRun()
-	// The semaphore capacity comes from --concurrency so user input directly
-	// bounds simultaneous cache checks and child `go test` processes.
 	c.sem = make(chan struct{}, c.workerCount())
 	outcomes := make([]suiteOutcome, len(suites))
 	for index := range suites {
+		select {
+		case c.sem <- struct{}{}:
+		case <-c.runCtx.Done():
+			c.wg.Wait()
+			return outcomes
+		}
+		if c.runCtx.Err() != nil {
+			<-c.sem
+			break
+		}
 		c.wg.Add(1)
 		go c.runSuiteWorker(suites[index], &outcomes[index])
 	}
@@ -313,7 +339,6 @@ func (c *testCommand) workerCount() int {
 // runSuiteWorker writes only its assigned outcome slot, so no result lock is needed.
 func (c *testCommand) runSuiteWorker(suite fingerprint.Suite, outcome *suiteOutcome) {
 	defer c.wg.Done()
-	c.sem <- struct{}{}
 	defer func() { <-c.sem }()
 	if c.runCtx.Err() != nil {
 		*outcome = suiteOutcome{kind: outcomeSkipped}

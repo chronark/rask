@@ -39,6 +39,58 @@ Discover packages --> Fingerprint each test suite
 
 Each suite is one package's tests. Cache misses run `go test -json -count=1 -failfast -shuffle=on`. Only passing results are cached. Changing a local dependency invalidates selected suites that depend on it. Passing test details stay hidden unless you use `-v`.
 
+## Package sharding
+
+Run one shard per CI worker, using a one-based index:
+
+```bash
+rask --shard 1/4 ./...
+rask --shard 2/4 ./...
+rask --shard 3/4 ./...
+rask --shard 4/4 ./...
+```
+
+Without timing data, rask sorts selected test packages by full import path and
+assigns them round-robin. Packages without test files do not occupy a slot.
+Discovery order, fingerprints, cache hits, and recorded result-cache durations
+do not affect membership. Empty shards succeed. Without `--shard`, rask keeps
+its normal randomized suite order and runs all selected suites.
+
+For duration balancing, give every worker the same immutable JSON snapshot:
+
+```bash
+rask --shard 1/4 --shard-timings timings.json ./...
+```
+
+```json
+{
+  "default_seconds": 10,
+  "seconds": {
+    "example.com/project/slow": 120,
+    "example.com/project/medium": 35
+  }
+}
+```
+
+Weights must be finite, positive seconds. Missing packages use `default_seconds`;
+entries for unselected packages have no effect. An optional `source` string can
+describe the snapshot. Rask does not create or update this file. It assigns
+longest packages first to the lightest shard, breaks equal-duration ties by import
+path and equal-load ties by shard index, then admits each shard's longest suites
+first. `--concurrency` still bounds active workers; concurrent workers can start
+or finish out of admission order.
+
+All workers must use the same package selection, source tree, Go environment,
+shard count, and snapshot contents. Refresh the snapshot between runs, never
+during one run. Changing the selected package set or snapshot can move packages
+between shards. No service coordinates workers or checks their inputs against
+each other. Fail-fast stops only the current shard; configure your CI to cancel
+other workers if needed. Summaries describe only the current shard.
+
+Sharding does not change cache keys or dependency invalidation. Results can be
+reused by other shards and unsharded runs when their fingerprints match. Local
+module paths and the Go environment still need to match for cross-machine reuse.
+
 ## Set up with your agent
 
 Paste this into your coding agent:

@@ -66,7 +66,6 @@ func Bool(name string, usage string) *BoolFlag {
 	return &BoolFlag{baseFlag: baseFlag{name: name, usage: usage}}
 }
 
-// IntFlag exists for bounded startup knobs while keeping string flags out.
 type IntFlag struct {
 	baseFlag
 	value int
@@ -89,4 +88,25 @@ func (f *IntFlag) Value() int { return f.value }
 // Int creates the only numeric flag shape rask accepts.
 func Int(name string, usage string) *IntFlag {
 	return &IntFlag{baseFlag: baseFlag{name: name, usage: usage}}
+}
+
+// StringFlag stores text options.
+type StringFlag struct {
+	baseFlag
+	value string
+}
+
+// Parse records an explicit string value.
+func (f *StringFlag) Parse(value string) error {
+	f.value = value
+	f.set = true
+	return nil
+}
+
+// Value returns the current string value.
+func (f *StringFlag) Value() string { return f.value }
+
+// String creates a string flag with an empty default.
+func String(name string, usage string) *StringFlag {
+	return &StringFlag{baseFlag: baseFlag{name: name, usage: usage}}
 }
