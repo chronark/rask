@@ -34,7 +34,7 @@ func TestReadEventsHandlesStreamLimitsAndNonTerminalTests(t *testing.T) {
 		[]byte(`{"Action":"run","Test":"TestB"}` + "\n"),
 		[]byte(`{"Action":"fail","Elapsed":0.01}` + "\n"),
 	}}
-	state := newSuiteState(suite, 0, false, nil)
+	state := newSuiteState(suite, nil)
 	readEvents(reader, state, 1, func() {})
 	if reader.index != len(reader.chunks) {
 		t.Fatalf("reader stopped at %d, want drained", reader.index)
@@ -141,17 +141,15 @@ func TestExecuteCancellationIsKilledNotFailed(t *testing.T) {
 	wantCanceledSuite(t, resultCh)
 }
 
-// TestExecuteEmitsProgressWithKnownTotals protects lister-backed denominators.
-func TestExecuteEmitsProgressWithKnownTotals(t *testing.T) {
+func TestExecuteEmitsProgressWithoutListing(t *testing.T) {
 	suite := suiteForTest("example.com/m/progress")
 	tool := &fakeTool{
-		listed:  map[string][]string{suite.Package.ImportPath: {"TestA", "TestB"}},
 		streams: map[string]string{suite.Package.ImportPath: twoTestProgressStream()},
 	}
 	progress := collectProgress(context.Background(), t, tool, suite)
 	wantProgress(t, progress, []Progress{
-		{Completed: 1, Total: 2, TotalKnown: true},
-		{Completed: 2, Total: 2, TotalKnown: true},
+		{Completed: 1},
+		{Completed: 2},
 	})
 }
 
@@ -159,34 +157,54 @@ func TestExecuteEmitsProgressWithKnownTotals(t *testing.T) {
 func TestExecuteProgressCountsOnlyTopLevelCompletions(t *testing.T) {
 	suite := suiteForTest("example.com/m/subtests")
 	tool := &fakeTool{
-		listed:  map[string][]string{suite.Package.ImportPath: {"TestA"}},
 		streams: map[string]string{suite.Package.ImportPath: subtestProgressStream()},
 	}
 	progress := collectProgress(context.Background(), t, tool, suite)
-	wantProgress(t, progress, []Progress{{Completed: 1, Total: 1, TotalKnown: true}})
+	wantProgress(t, progress, []Progress{{Completed: 1}})
 }
 
-// TestExecuteProgressIgnoresUnlistedTopLevelEvents protects lister units.
-func TestExecuteProgressIgnoresUnlistedTopLevelEvents(t *testing.T) {
+func TestExecuteProgressExcludesExamplesAndFuzz(t *testing.T) {
 	suite := suiteForTest("example.com/m/examples-fuzz")
 	tool := &fakeTool{
-		listed:  map[string][]string{suite.Package.ImportPath: {"TestA", "TestB"}},
 		streams: map[string]string{suite.Package.ImportPath: unlistedProgressStream()},
 	}
 	progress := collectProgress(context.Background(), t, tool, suite)
 	wantProgress(t, progress, []Progress{
-		{Completed: 1, Total: 2, TotalKnown: true},
-		{Completed: 2, Total: 2, TotalKnown: true},
+		{Completed: 1},
+		{Completed: 2},
 	})
 }
 
-// TestExecuteProgressSurvivesListFailure protects cosmetic enumeration fallback.
-func TestExecuteProgressSurvivesListFailure(t *testing.T) {
+func TestExecuteProgressUsesOnlyObservedTests(t *testing.T) {
 	suite := suiteForTest("example.com/m/unknown")
 	tool := &fakeTool{
-		listErrs: map[string]error{suite.Package.ImportPath: fmt.Errorf("list failed")},
-		streams:  map[string]string{suite.Package.ImportPath: singleTestProgressStream()},
+		streams: map[string]string{suite.Package.ImportPath: singleTestProgressStream()},
 	}
+	progress := collectProgress(context.Background(), t, tool, suite)
+	wantProgress(t, progress, []Progress{{Completed: 1}})
+}
+
+func TestExecuteIncompleteStreamFails(t *testing.T) {
+	for _, stream := range []string{"", `{"Action":"run","Test":"TestInterrupted"}` + "\n"} {
+		suite := suiteForTest("example.com/m/incomplete")
+		tool := &fakeTool{streams: map[string]string{suite.Package.ImportPath: stream}}
+		result := newExecutor(tool, "/tmp", time.Second).Execute(context.Background(), suite, Hooks{})
+		if !result.Failed || result.Completed || result.Err != "go test exited without a package result" {
+			t.Fatalf("result = %+v, want incomplete failed suite", result)
+		}
+		if stream != "" {
+			wantOutcomes(t, result.Tests, map[string]TestOutcome{"TestInterrupted": TestFailed})
+		}
+	}
+}
+
+func TestExecuteProgressCountsDuplicateTerminalsOnce(t *testing.T) {
+	suite := suiteForTest("example.com/m/repeated")
+	stream := `{"Action":"pass","Test":"TestRepeated"}` + "\n" +
+		`{"Action":"run","Test":"TestRepeated"}` + "\n" +
+		`{"Action":"pass","Test":"TestRepeated"}` + "\n" +
+		`{"Action":"pass"}` + "\n"
+	tool := &fakeTool{streams: map[string]string{suite.Package.ImportPath: stream}}
 	progress := collectProgress(context.Background(), t, tool, suite)
 	wantProgress(t, progress, []Progress{{Completed: 1}})
 }
@@ -309,7 +327,6 @@ func activeStreamLines() []string {
 	}
 }
 
-// twoTestProgressStream emits two lister-visible terminal events.
 func twoTestProgressStream() string {
 	return `{"Action":"run","Test":"TestA"}` + "\n" +
 		`{"Action":"pass","Test":"TestA"}` + "\n" +
@@ -318,7 +335,6 @@ func twoTestProgressStream() string {
 		`{"Action":"pass","Elapsed":0.01}` + "\n"
 }
 
-// subtestProgressStream proves subtests do not increment the top-level counter.
 func subtestProgressStream() string {
 	return `{"Action":"run","Test":"TestA"}` + "\n" +
 		`{"Action":"run","Test":"TestA/one"}` + "\n" +
@@ -329,7 +345,6 @@ func subtestProgressStream() string {
 		`{"Action":"pass","Elapsed":0.01}` + "\n"
 }
 
-// unlistedProgressStream proves examples and fuzz targets do not move Test totals.
 func unlistedProgressStream() string {
 	return `{"Action":"pass","Test":"TestA"}` + "\n" +
 		`{"Action":"pass","Test":"TestA/sub"}` + "\n" +
@@ -360,8 +375,6 @@ type fakeTool struct {
 	streams   map[string]string
 	readers   map[string]readerFactory
 	stderr    map[string]string
-	listed    map[string][]string
-	listErrs  map[string]error
 	startErrs map[string]error
 }
 
@@ -378,6 +391,10 @@ func (f *fakeTool) ListPackages(context.Context, string, []string) ([]gotool.Pac
 	return nil, fmt.Errorf("unexpected ListPackages call")
 }
 
+func (f *fakeTool) ListDependencies(context.Context, string, []string) ([]gotool.Package, error) {
+	return nil, fmt.Errorf("unexpected ListDependencies call")
+}
+
 // ListModules fails because executor tests pass suites directly.
 func (f *fakeTool) ListModules(context.Context, string) ([]gotool.Module, error) {
 	return nil, fmt.Errorf("unexpected ListModules call")
@@ -388,15 +405,8 @@ func (f *fakeTool) Environment(context.Context, string) ([]byte, error) {
 	return nil, fmt.Errorf("unexpected Environment call")
 }
 
-// ListTests returns configured names or an empty successful listing.
-func (f *fakeTool) ListTests(ctx context.Context, _ string, importPath string) ([]string, error) {
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return nil, ctx.Err()
-	}
-	if err := f.listErrs[importPath]; err != nil {
-		return nil, err
-	}
-	return append([]string(nil), f.listed[importPath]...), nil
+func (f *fakeTool) ListTests(context.Context, string, string) ([]string, error) {
+	panic("executor must not list tests")
 }
 
 // StartTests returns a fake process so executor tests own stream behavior.

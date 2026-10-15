@@ -106,11 +106,11 @@ On a terminal, rask paints a sticky progress region at the bottom. Finished suit
 
 ```text
 Testing 12/74 suites | 41 tests: 40 passed; 0 failed; 1 ignored | 8.3s
-    svc/api/integration        (12/45) 14.2s
-    pkg/cache                   (3/9)   4.1s
+    svc/api/integration         (12/?) 14.2s
+    pkg/cache                   (3/?)   4.1s
     pkg/uid                     (0/?)
 ```
 
-The header shows completed suites, total selected suites, folded test counts, and elapsed time. Running rows are sorted longest-running first. Each row shows per-suite progress as `(completed/total)` when the preflight `go test -list '^Test'` succeeds, or `(completed/?)` when that cosmetic listing fails. The region is capped at 32 rows including the overflow row.
+The header shows completed suites, total selected suites, folded test counts, and elapsed time. Running rows are sorted longest-running first. Each row shows `(completed/?)`, counting only observed top-level `Test` completions, not subtests, examples, or fuzz targets. Test totals are unknown until execution finishes; rask does not run a preliminary test listing. Finished suite counts include all observed test outcomes. The region is capped at 32 rows including the overflow row.
 
 `NO_COLOR=1` disables colors and the sticky progress region. See [CLI reference](cli.md) for the full environment table and [Architecture](architecture.md) for the event stream design.

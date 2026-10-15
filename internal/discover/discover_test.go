@@ -96,8 +96,8 @@ func TestDiscoverListsPatternsFromUserDir(t *testing.T) {
 	if got := tool.dirs["./api"]; got != userDir {
 		t.Fatalf("pattern dir = %q, want %q", got, userDir)
 	}
-	if got := tool.dirs["./..."]; got != module.Dir {
-		t.Fatalf("closure dir = %q, want %q", got, module.Dir)
+	if tool.calls["./..."] != 0 {
+		t.Fatal("narrow selection must not list the whole module")
 	}
 }
 
@@ -151,18 +151,16 @@ func TestDiscoverRejectsBrokenAdditionalRoot(t *testing.T) {
 	}
 }
 
-// TestDiscoverRejectsAdditionalRootListFailure protects go-list errors in local roots.
-func TestDiscoverRejectsAdditionalRootListFailure(t *testing.T) {
-	module := moduleFixtureRootWithGoMod(t, "module example.com/m\n\ngo 1.26\n\nreplace example.com/dep => ../dep\n")
-	dep := moduleFixtureRootAt(t, filepath.Join(filepath.Dir(module.Dir), "dep"), "example.com/dep")
+func TestDiscoverRejectsDependencyListFailure(t *testing.T) {
+	module := moduleFixtureRoot(t)
 	app := packageFixture(module, "app")
 	tool := &fakeTool{
-		allByDir:     map[string][]gotool.Package{module.Dir: {app}},
-		listErrByDir: map[string]error{dep.Dir: fmt.Errorf("dep broken")},
+		all:           []gotool.Package{app},
+		dependencyErr: fmt.Errorf("dependency broken"),
 	}
 	_, err := Packages(context.Background(), tool, module, module.Dir, []string{"./..."})
-	if err == nil || !strings.Contains(err.Error(), dep.Dir) {
-		t.Fatalf("err = %v, want listed root named", err)
+	if err == nil || !strings.Contains(err.Error(), "dependency broken") {
+		t.Fatalf("err = %v, want dependency error", err)
 	}
 }
 
@@ -290,12 +288,13 @@ func sameSet(first []string, second []string) error {
 
 // fakeTool records package-listing calls for discovery tests.
 type fakeTool struct {
-	selected     []gotool.Package
-	all          []gotool.Package
-	allByDir     map[string][]gotool.Package
-	listErrByDir map[string]error
-	calls        map[string]int
-	dirs         map[string]string
+	selected      []gotool.Package
+	all           []gotool.Package
+	allByDir      map[string][]gotool.Package
+	listErrByDir  map[string]error
+	dependencyErr error
+	calls         map[string]int
+	dirs          map[string]string
 }
 
 // CurrentModule fails so tests catch accidental module lookups.
@@ -328,6 +327,20 @@ func (f *fakeTool) ListPackages(
 		return f.all, nil
 	}
 	return f.selected, nil
+}
+
+func (f *fakeTool) ListDependencies(context.Context, string, []string) ([]gotool.Package, error) {
+	if f.dependencyErr != nil {
+		return nil, f.dependencyErr
+	}
+	if f.allByDir != nil {
+		var packages []gotool.Package
+		for _, values := range f.allByDir {
+			packages = append(packages, values...)
+		}
+		return packages, nil
+	}
+	return f.all, nil
 }
 
 // ListModules fails so workspace coverage must opt in explicitly.

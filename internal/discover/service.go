@@ -23,7 +23,7 @@ type discoverer struct {
 	rand *rand.Rand
 }
 
-// Packages returns a full run universe because go list already materializes it.
+// Packages returns selected packages and their local build and test dependencies.
 func Packages(
 	ctx context.Context,
 	tool gotool.Tool,

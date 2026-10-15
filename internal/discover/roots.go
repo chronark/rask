@@ -143,18 +143,3 @@ func canonicalPath(dir string) (string, error) {
 	assert.True(filepath.IsAbs(root), "canonical root %s must be absolute", root)
 	return root, nil
 }
-
-// additionalRoots prevents the main module from being listed twice.
-func additionalRoots(roots []string, mainRoot string) []string {
-	mainRoot, err := canonicalPath(mainRoot)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(roots))
-	for _, root := range roots {
-		if root != mainRoot {
-			out = append(out, root)
-		}
-	}
-	return out
-}

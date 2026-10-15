@@ -164,6 +164,10 @@ func (t *whyTool) ListPackages(context.Context, string, []string) ([]gotool.Pack
 	return append([]gotool.Package(nil), t.packages...), nil
 }
 
+func (t *whyTool) ListDependencies(context.Context, string, []string) ([]gotool.Package, error) {
+	return append([]gotool.Package(nil), t.packages...), nil
+}
+
 func (t *whyTool) ListModules(context.Context, string) ([]gotool.Module, error) {
 	return []gotool.Module{t.module}, nil
 }

@@ -145,6 +145,9 @@ type Tool interface {
 	// ListPackages accepts ctx because package discovery is often cancelled by Ctrl+C.
 	ListPackages(ctx context.Context, dir string, patterns []string) ([]Package, error)
 
+	// ListDependencies includes transitive build imports of the supplied packages.
+	ListDependencies(ctx context.Context, dir string, importPaths []string) ([]Package, error)
+
 	// ListModules accepts ctx so workspace discovery does not outlive the run.
 	ListModules(ctx context.Context, dir string) ([]Module, error)
 
@@ -201,9 +204,22 @@ func (SystemTool) CurrentModule(ctx context.Context) (Module, error) {
 // streams. Syntax and load errors carried in the JSON Error field are handled
 // by discovery because `go list` may still exit zero for those packages.
 func (SystemTool) ListPackages(ctx context.Context, dir string, patterns []string) ([]Package, error) {
+	return listPackages(ctx, dir, patterns, false)
+}
+
+// ListDependencies resolves build dependencies without loading their tests.
+func (SystemTool) ListDependencies(ctx context.Context, dir string, importPaths []string) ([]Package, error) {
+	return listPackages(ctx, dir, importPaths, true)
+}
+
+func listPackages(ctx context.Context, dir string, patterns []string, dependencies bool) ([]Package, error) {
 	assert.NotZero(dir)
 	assert.NotZero(len(patterns))
-	arguments := append([]string{"list", "-json=" + listFields}, patterns...)
+	arguments := []string{"list", "-json=" + listFields}
+	if dependencies {
+		arguments = append(arguments, "-deps")
+	}
+	arguments = append(arguments, patterns...)
 	output, stderr, err := runGo(ctx, dir, arguments...)
 	if err != nil {
 		if ctx.Err() != nil {

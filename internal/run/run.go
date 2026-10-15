@@ -1,8 +1,8 @@
 // Package run executes one suite and folds its `go test -json` stream.
 //
 // Callers own suite fan-out. This package keeps only the per-suite work that
-// has to stay beside process execution: test enumeration for progress totals,
-// JSON folding with memory bounds, and the no-output watchdog that kills a
+// has to stay beside process execution: JSON folding with memory bounds,
+// live progress, and the no-output watchdog that kills a
 // child before a compile or lock wait can stall the whole command.
 package run
 
@@ -125,13 +125,13 @@ type SuiteResult struct {
 
 // Progress lets callers render one suite without coupling run to a UI protocol.
 type Progress struct {
-	// Completed counts top-level terminal events so progress units match `go test -list`.
+	// Completed counts top-level Test terminal events observed in the JSON stream.
 	Completed int
 
-	// Total carries the lister denominator when enumeration succeeds.
+	// Total carries the test denominator when known.
 	Total int
 
-	// TotalKnown lets callers avoid displaying a fake denominator after lister failure.
+	// TotalKnown is false during streaming because unstarted tests are unknown.
 	TotalKnown bool
 }
 
@@ -179,8 +179,6 @@ type suiteState struct {
 	outputsDropped         map[string]int
 	packageOutput          []string
 	completedTopLevelTests int
-	totalTests             int
-	totalKnown             bool
 	elapsedSeconds         float64
 	failed                 bool
 	completed              bool
@@ -199,8 +197,7 @@ type suiteState struct {
 func (e *Executor) Execute(callerCtx context.Context, suite SuiteTask, hooks Hooks) SuiteResult {
 	processCtx, cancel := context.WithCancel(callerCtx)
 	defer cancel()
-	total, totalKnown := e.listSuiteTests(processCtx, suite)
-	state := newSuiteState(suite, total, totalKnown, hooks.Progress)
+	state := newSuiteState(suite, hooks.Progress)
 	process, err := e.tool.StartTests(processCtx, e.moduleDir, suite.Package.ImportPath)
 	if err != nil {
 		if errors.Is(callerCtx.Err(), context.Canceled) {
@@ -225,22 +222,9 @@ func (e *Executor) Execute(callerCtx context.Context, suite SuiteTask, hooks Hoo
 	return state.result()
 }
 
-// listSuiteTests keeps progress cosmetic because suite execution must not fail on listing.
-func (e *Executor) listSuiteTests(ctx context.Context, suite SuiteTask) (int, bool) {
-	listCtx, cancel := context.WithTimeout(ctx, e.stallAfter)
-	defer cancel()
-	tests, err := e.tool.ListTests(listCtx, e.moduleDir, suite.Package.ImportPath)
-	if err != nil {
-		return 0, false
-	}
-	return len(tests), true
-}
-
 // newSuiteState centralizes bounds maps so every suite starts with the same invariants.
 func newSuiteState(
 	suite SuiteTask,
-	totalTests int,
-	totalKnown bool,
 	emitProgress func(Progress),
 ) *suiteState {
 	assert.True(suite.Package.HasTests())
@@ -249,8 +233,6 @@ func newSuiteState(
 		outcomes:       make(map[string]TestOutcome),
 		outputs:        make(map[string][]string),
 		outputsDropped: make(map[string]int),
-		totalTests:     totalTests,
-		totalKnown:     totalKnown,
 		emitProgress:   emitProgress,
 	}
 }
@@ -458,7 +440,6 @@ func isTerminalOutcome(outcome TestOutcome) bool {
 	return outcome == TestPassed || outcome == TestFailed || outcome == TestIgnored
 }
 
-// isTopLevelTestName reports whether name is counted by go test -list.
 func isTopLevelTestName(name string) bool {
 	return !strings.Contains(name, "/") && gotool.MatchesListTestsPattern(name)
 }
@@ -468,7 +449,7 @@ func (s *suiteState) reportProgress() {
 	if s.emitProgress == nil {
 		return
 	}
-	s.emitProgress(Progress{Completed: s.completedTopLevelTests, Total: s.totalTests, TotalKnown: s.totalKnown})
+	s.emitProgress(Progress{Completed: s.completedTopLevelTests})
 }
 
 // recordTestStarted records a test name once and enforces the per-suite bound.

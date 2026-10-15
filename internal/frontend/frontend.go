@@ -203,7 +203,7 @@ type TestProgress struct {
 	// Total is the known test total when TotalKnown is true.
 	Total int
 
-	// TotalKnown reports whether the runner's preflight test listing succeeded.
+	// TotalKnown is false when the runner cannot know how many tests will execute.
 	TotalKnown bool
 }
 

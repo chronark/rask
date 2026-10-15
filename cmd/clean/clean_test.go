@@ -193,6 +193,10 @@ func (t cleanTool) ListPackages(context.Context, string, []string) ([]gotool.Pac
 	return nil, nil
 }
 
+func (t cleanTool) ListDependencies(context.Context, string, []string) ([]gotool.Package, error) {
+	return nil, nil
+}
+
 func (t cleanTool) ListModules(context.Context, string) ([]gotool.Module, error) {
 	return nil, nil
 }

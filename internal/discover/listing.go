@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/chronark/rask/internal/gotool"
@@ -19,15 +20,11 @@ func (d *discoverer) discover(ctx context.Context) ([]gotool.Package, error) {
 	if err != nil {
 		return nil, err
 	}
-	closure, err := d.listMainClosure(ctx, selected)
+	dependencies, err := d.tool.ListDependencies(ctx, d.patternDir, dependencyTargets(selected))
 	if err != nil {
 		return nil, err
 	}
-	closure, err = d.appendAdditionalRoots(ctx, closure, roots)
-	if err != nil {
-		return nil, err
-	}
-	return d.validateAndMark(closure, selected)
+	return d.validateAndMark(localPackages(dependencies, roots), selected)
 }
 
 // listSelected fails fast so an empty user pattern cannot look like success.
@@ -42,63 +39,97 @@ func (d *discoverer) listSelected(ctx context.Context) ([]gotool.Package, error)
 	return selected, nil
 }
 
-// listMainClosure avoids a redundant go-list when ./... is already complete.
-func (d *discoverer) listMainClosure(
-	ctx context.Context,
-	selected []gotool.Package,
-) ([]gotool.Package, error) {
-	if wholeModulePattern(d.patterns) {
-		return markModuleDir(selected, d.module.Dir), nil
-	}
-	packages, err := d.tool.ListPackages(ctx, d.module.Dir, []string{"./..."})
-	if err != nil {
-		return nil, err
-	}
-	return markModuleDir(packages, d.module.Dir), nil
-}
-
-// appendAdditionalRoots keeps local module dependencies in the hash universe.
-func (d *discoverer) appendAdditionalRoots(
-	ctx context.Context,
-	closure []gotool.Package,
-	roots []string,
-) ([]gotool.Package, error) {
-	for _, root := range additionalRoots(roots, d.module.Dir) {
-		packages, err := d.listAdditionalRoot(ctx, root)
-		if err != nil {
-			return nil, err
+func dependencyTargets(selected []gotool.Package) []string {
+	paths := make(map[string]bool)
+	for _, p := range selected {
+		paths[p.ImportPath] = true
+		for _, path := range p.TestImports {
+			paths[path] = true
 		}
-		closure = append(closure, packages...)
+		for _, path := range p.XTestImports {
+			paths[path] = true
+		}
 	}
-	return closure, nil
+	delete(paths, "C")
+	targets := make([]string, 0, len(paths))
+	for path := range paths {
+		targets = append(targets, path)
+	}
+	sort.Strings(targets)
+	return targets
 }
 
-// listAdditionalRoot names the local dependency root in go-list failures.
-func (d *discoverer) listAdditionalRoot(
-	ctx context.Context,
-	root string,
-) ([]gotool.Package, error) {
-	packages, err := d.tool.ListPackages(ctx, root, []string{"./..."})
-	if err != nil {
-		return nil, fmt.Errorf("listing local module root %s: %w", root, err)
+func localPackages(packages []gotool.Package, roots []string) []gotool.Package {
+	var local []gotool.Package
+	byPath := make(map[string]gotool.Package, len(packages))
+	localPaths := make(map[string]bool)
+	for _, p := range packages {
+		byPath[p.ImportPath] = p
+		p.ModuleDir = ""
+		for _, root := range roots {
+			relative, err := filepath.Rel(root, p.Dir)
+			if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				continue
+			}
+			if len(root) > len(p.ModuleDir) {
+				p.ModuleDir = root
+			}
+		}
+		if p.ModuleDir != "" {
+			local = append(local, p)
+			localPaths[p.ImportPath] = true
+		}
 	}
-	return markModuleDir(packages, root), nil
-}
-
-// markModuleDir records ownership so later stages can salt by module root.
-func markModuleDir(packages []gotool.Package, root string) []gotool.Package {
-	root, err := canonicalPath(root)
-	if err != nil {
-		root = filepath.Clean(root)
+	bridges := make(map[string][]string)
+	bridge := func(path string) []string {
+		if localPaths[path] {
+			return []string{path}
+		}
+		if paths, ok := bridges[path]; ok {
+			return paths
+		}
+		seen := make(map[string]bool)
+		reachable := make(map[string]bool)
+		pending := []string{path}
+		for len(pending) > 0 {
+			current := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			if seen[current] {
+				continue
+			}
+			seen[current] = true
+			if localPaths[current] {
+				reachable[current] = true
+				continue
+			}
+			pending = append(pending, byPath[current].Imports...)
+		}
+		paths := make([]string, 0, len(reachable))
+		for reachablePath := range reachable {
+			paths = append(paths, reachablePath)
+		}
+		sort.Strings(paths)
+		bridges[path] = paths
+		return paths
 	}
-	out := append([]gotool.Package(nil), packages...)
-	for index := range out {
-		out[index].ModuleDir = root
+	collapse := func(imports []string) []string {
+		paths := make(map[string]bool)
+		for _, path := range imports {
+			for _, target := range bridge(path) {
+				paths[target] = true
+			}
+		}
+		collapsed := make([]string, 0, len(paths))
+		for path := range paths {
+			collapsed = append(collapsed, path)
+		}
+		sort.Strings(collapsed)
+		return collapsed
 	}
-	return out
-}
-
-// wholeModulePattern is intentionally narrow to avoid under-listing closures.
-func wholeModulePattern(patterns []string) bool {
-	return len(patterns) == 1 && patterns[0] == "./..."
+	for index := range local {
+		local[index].Imports = collapse(local[index].Imports)
+		local[index].TestImports = collapse(local[index].TestImports)
+		local[index].XTestImports = collapse(local[index].XTestImports)
+	}
+	return local
 }
