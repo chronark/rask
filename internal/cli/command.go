@@ -86,6 +86,16 @@ func (c *Command) Int(name string) int {
 	return 0
 }
 
+// String returns an empty string when the option is absent.
+func (c *Command) String(name string) string {
+	if flag, ok := c.flagMap[name]; ok {
+		if stringFlag, ok := flag.(*StringFlag); ok {
+			return stringFlag.Value()
+		}
+	}
+	return ""
+}
+
 // Run executes the command with process-shaped arguments.
 func (c *Command) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {

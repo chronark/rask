@@ -86,6 +86,9 @@ type TestResult struct {
 	// Outcome is the folded terminal state for the test.
 	Outcome TestOutcome
 
+	// ElapsedSeconds is absent when no terminal test event was received.
+	ElapsedSeconds *float64
+
 	// Output contains retained diagnostic output for the test.
 	Output []string
 
@@ -175,6 +178,7 @@ type suiteState struct {
 	suite                  SuiteTask
 	testNames              []string
 	outcomes               map[string]TestOutcome
+	testElapsedSeconds     map[string]float64
 	outputs                map[string][]string
 	outputsDropped         map[string]int
 	packageOutput          []string
@@ -245,13 +249,14 @@ func newSuiteState(
 ) *suiteState {
 	assert.True(suite.Package.HasTests())
 	return &suiteState{
-		suite:          suite,
-		outcomes:       make(map[string]TestOutcome),
-		outputs:        make(map[string][]string),
-		outputsDropped: make(map[string]int),
-		totalTests:     totalTests,
-		totalKnown:     totalKnown,
-		emitProgress:   emitProgress,
+		suite:              suite,
+		outcomes:           make(map[string]TestOutcome),
+		testElapsedSeconds: make(map[string]float64),
+		outputs:            make(map[string][]string),
+		outputsDropped:     make(map[string]int),
+		totalTests:         totalTests,
+		totalKnown:         totalKnown,
+		emitProgress:       emitProgress,
 	}
 }
 
@@ -443,6 +448,7 @@ func (s *suiteState) recordTerminalTest(ev testEvent) bool {
 		before = testRunning
 	}
 	s.outcomes[ev.Test] = TestOutcome(ev.Action)
+	s.testElapsedSeconds[ev.Test] = ev.Elapsed
 	if isTerminalOutcome(before) {
 		return false
 	}
@@ -524,9 +530,14 @@ func (s *suiteState) result() SuiteResult {
 		if outcome == testRunning && (s.completed || s.failed) {
 			outcome = TestFailed
 		}
+		var elapsed *float64
+		if seconds, known := s.testElapsedSeconds[name]; known {
+			elapsed = &seconds
+		}
 		tests = append(tests, TestResult{
 			Name: name, Outcome: outcome, Output: append([]string(nil), s.outputs[name]...),
-			DroppedOutput: s.outputsDropped[name],
+			ElapsedSeconds: elapsed,
+			DroppedOutput:  s.outputsDropped[name],
 		})
 	}
 	errText := ""
