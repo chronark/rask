@@ -25,9 +25,34 @@ Options:
 | `--verbose` | Render passing and ignored test lines. |
 | `--no-cache` | Bypass cache reads for this run and refresh passing suites. |
 | `--concurrency` | Set how many stale suites run at once. `0` or unset uses automatic sizing. |
+| `--x-junit-file <path>` | Write executed test results as JUnit XML. Experimental: this flag and its report format may change or be removed. |
 | `--version` | Print the rask version and exit before running tests. |
 
 rask always runs whole suites, always fails fast, and always randomizes order. Suites are scheduled in a randomized dependency-respecting order, and each stale suite runs `go test` with `-shuffle=on`. `--concurrency` controls how many suites are in flight at once — each in-flight suite is one bounded worker doing its cache check and, when stale, one suite-level `go test` process; it does not change intra-suite Go test behavior. When `--concurrency` is unset or `0`, rask uses `min(32, max(1, GOMAXPROCS-1))`. Explicit values must be between `1` and `32`. Failed suite output includes Go's `-test.shuffle <seed>` line when Go emits one, so a shuffled failure can be replayed directly with `go test -shuffle=<seed> <pkg>`. Filtered or customized runs such as `-run`, benchmarks, fuzzing, and coverage belong to plain `go test`. Unknown test flags are rejected with that hint.
+
+### Experimental JUnit output
+
+Use `--x-junit-file` to write a report without changing terminal output or caching:
+
+```bash
+rask --x-junit-file test-results/go.xml ./...
+```
+
+The path is relative to your working directory. Rask creates missing parent
+directories and replaces an existing report. A report-write error makes the
+command fail.
+
+Each executed test and subtest has its Go name, package import path as
+`classname`, and duration when Go reports one. Failed and skipped tests include
+their captured output. Package failures without a failed test appear as an
+errored `[package]` entry.
+
+Cached suites and suites not dispatched by the scheduler are omitted. A fully cached run
+writes an empty report instead of reporting cached passes as fresh executions.
+The report includes available results after a test failure or interruption.
+Tests interrupted before a result appear as errors without an invented duration.
+Errors before test execution, such as package discovery errors, do not produce
+a report.
 
 ## `rask why`
 

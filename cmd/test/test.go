@@ -2,6 +2,7 @@ package testcmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -49,6 +50,7 @@ type testCommand struct {
 	patterns     []string
 	noCache      bool
 	concurrency  int
+	junitFile    string
 	frontend     *frontend.Frontend
 	executor     suiteExecutor
 	events       chan<- frontend.Event
@@ -83,6 +85,8 @@ type testArguments struct {
 
 	// concurrency fixes suite parallelism when users need deterministic process fan-out.
 	concurrency int
+
+	junitFile string
 }
 
 // suiteCache is the cache behavior the test command needs for suites.
@@ -148,6 +152,7 @@ func Flags() []cli.Flag {
 		cli.Bool("verbose", "render passing and ignored test lines"),
 		cli.Bool("no-cache", "bypass cache reads and refresh passing suites"),
 		cli.Int("concurrency", "suite workers; 0 or unset uses automatic sizing"),
+		cli.String("x-junit-file", "experimental: write executed test results as JUnit XML"),
 	}
 }
 
@@ -187,6 +192,7 @@ func testArgumentsFromCommand(command *cli.Command) (testArguments, error) {
 		verbose:     command.Bool("v") || command.Bool("verbose"),
 		noCache:     command.Bool("no-cache"),
 		concurrency: command.Int("concurrency"),
+		junitFile:   command.String("x-junit-file"),
 	}
 	if parsed.concurrency < 0 {
 		return testArguments{}, fmt.Errorf("--concurrency must be positive")
@@ -219,7 +225,8 @@ func newTestCommand(
 		ctx: ctx, tool: tool, module: module, patternDir: userDir,
 		resultCache: resultCache, patterns: parsed.patterns,
 		noCache: parsed.noCache, concurrency: parsed.concurrency,
-		frontend: ui, executor: run.NewExecutor(tool, module.Dir),
+		junitFile: parsed.junitFile,
+		frontend:  ui, executor: run.NewExecutor(tool, module.Dir),
 		events: events, frontendDone: make(chan struct{}), startedAt: time.Now(),
 	}
 }
@@ -244,7 +251,13 @@ func (c *testCommand) run() (int, error) {
 	c.events <- frontend.Event{Kind: frontend.EventSummary, Summary: summary}
 	close(c.events)
 	<-c.frontendDone
-	return c.finish(summary)
+	code, err := c.finish(summary)
+	if c.junitFile != "" {
+		if reportErr := writeJUnit(c.junitFile, outcomes); reportErr != nil {
+			return max(1, code), errors.Join(err, fmt.Errorf("writing JUnit report: %w", reportErr))
+		}
+	}
+	return code, err
 }
 
 // suites applies interruption policy around batch fingerprinting.
