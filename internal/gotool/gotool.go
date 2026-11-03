@@ -155,7 +155,7 @@ type Tool interface {
 	ListTests(ctx context.Context, moduleDir string, importPath string) ([]string, error)
 
 	// StartTests starts one streaming `go test -json` process for importPath.
-	StartTests(ctx context.Context, moduleDir string, importPath string) (TestProcess, error)
+	StartTests(ctx context.Context, moduleDir string, importPath string, env ...string) (TestProcess, error)
 }
 
 // TestProcess is a streaming handle for one `go test -json` process.
@@ -266,6 +266,7 @@ func (SystemTool) ListTests(ctx context.Context, moduleDir string, importPath st
 func runGoListTests(ctx context.Context, moduleDir string, importPath string) ([]byte, string, error) {
 	command := exec.CommandContext(ctx, "go", goListTestArguments(importPath)...)
 	command.Dir = moduleDir
+	command.Env = testEnvironment(nil)
 	command.WaitDelay = testProcessWaitDelay
 	configureTestCommandCancel(command)
 	var stdout bytes.Buffer
@@ -344,8 +345,8 @@ func SaltEnvironment(environment []byte) []byte {
 // process is bound to ctx through [exec.CommandContext], and gotool installs
 // the cancellation policy so fail-fast and watchdog kills reap the whole
 // process tree started by `go test`.
-func (SystemTool) StartTests(ctx context.Context, moduleDir string, importPath string) (TestProcess, error) {
-	return startTestProcess(ctx, moduleDir, "go", goTestArguments(importPath)...)
+func (SystemTool) StartTests(ctx context.Context, moduleDir string, importPath string, env ...string) (TestProcess, error) {
+	return startTestProcessEnv(ctx, moduleDir, env, "go", goTestArguments(importPath)...)
 }
 
 // goTestArguments returns the fixed test invocation rask uses for stale suites.
@@ -360,9 +361,14 @@ func goTestArguments(importPath string) []string {
 // same command setup, so every suite kill path keeps the same process cleanup
 // behavior.
 func startTestProcess(ctx context.Context, moduleDir string, name string, args ...string) (TestProcess, error) {
+	return startTestProcessEnv(ctx, moduleDir, nil, name, args...)
+}
+
+func startTestProcessEnv(ctx context.Context, moduleDir string, env []string, name string, args ...string) (TestProcess, error) {
 	assert.NotNil(ctx)
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = moduleDir
+	command.Env = testEnvironment(env)
 	command.WaitDelay = testProcessWaitDelay
 	configureTestCommandCancel(command)
 	process := &systemTestProcess{command: command}
@@ -379,6 +385,17 @@ func startTestProcess(ctx context.Context, moduleDir string, name string, args .
 		return nil, fmt.Errorf("starting test command: %w", err)
 	}
 	return process, nil
+}
+
+// Enumeration and nested Rask runs must not inherit another package's identity.
+func testEnvironment(extra []string) []string {
+	env := make([]string, 0, len(os.Environ())+len(extra))
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "RASK_TRACEPARENT=") {
+			env = append(env, entry)
+		}
+	}
+	return append(env, extra...)
 }
 
 // systemTestProcess adapts [exec.Cmd] to [TestProcess].

@@ -54,6 +54,51 @@ Tests interrupted before a result appear as errors without an invented duration.
 Errors before test execution, such as package discovery errors, do not produce
 a report.
 
+### Experimental Axiom tracing
+
+Set `RASK_AXIOM_TRACE_TOKEN` in your environment to send test timing spans
+directly to Axiom through OTLP/HTTP. Rask uses `RASK_AXIOM_TOKEN` as a fallback
+when `RASK_AXIOM_TRACE_TOKEN` is empty. Use an ingest-only token for the selected
+dataset. Without a token, tracing stays disabled.
+
+The dataset defaults to `rask-traces`. Set `RASK_AXIOM_DATASET` to override it.
+
+```bash
+rask --no-cache ./pkg/testutil/containers
+```
+
+The default endpoint is
+`https://us-east-1.aws.edge.axiom.co/v1/traces`. Set `RASK_AXIOM_ENDPOINT` to
+the full traces URL for another Axiom edge deployment or a local capture server.
+Use `https` for remote endpoints. Rask does not start a collector or receiver.
+
+Each executed package has its own trace. Each observed test and subtest has a
+span with its outcome, Go-reported duration, and paused duration. Repeated
+executions have distinct span IDs. Cached tests produce no execution spans.
+Test spans are direct children of the package span because Go test names do not
+reliably encode the subtest parent relationship.
+
+Instrumented tests receive the package context in `RASK_TRACEPARENT` only during
+execution, not during test enumeration. A helper can allocate a test span ID in
+that trace and announce its W3C traceparent with
+`t.Attr("rask.test.traceparent.v1", traceparent)`. Rask uses that ID for the
+test span. The helper uses it as a non-recording remote parent for operation
+spans, not as another recording test span. This protocol requires Go's
+structured test attributes and is experimental.
+
+Test helpers can use a private provider and export directly to the same dataset
+without changing application providers. The child test processes inherit the
+Axiom credentials. Rask does not export
+stdout, SQL, or DSNs, but package and test names are exported.
+
+This is a timing aid, not a profiler or a CI speedup by itself. Go JSON timestamps
+are observed stream times and can differ from operation timestamps. Package
+spans start after enumeration, so they exclude discovery and enumeration costs.
+Bounded queues, network failures, and killed processes can lose spans. Rask
+limits its final export wait to two seconds and does not change test results
+when export fails. The containers helper flushes for at most one second per
+instrumented test, which adds some overhead. Package teardown is not instrumented.
+
 ## `rask why`
 
 ```text

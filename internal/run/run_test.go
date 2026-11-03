@@ -400,7 +400,7 @@ func (f *fakeTool) ListTests(ctx context.Context, _ string, importPath string) (
 }
 
 // StartTests returns a fake process so executor tests own stream behavior.
-func (f *fakeTool) StartTests(ctx context.Context, _ string, importPath string) (gotool.TestProcess, error) {
+func (f *fakeTool) StartTests(ctx context.Context, _ string, importPath string, _ ...string) (gotool.TestProcess, error) {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return nil, ctx.Err()
 	}

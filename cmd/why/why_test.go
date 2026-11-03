@@ -176,7 +176,7 @@ func (t *whyTool) ListTests(context.Context, string, string) ([]string, error) {
 	return nil, nil
 }
 
-func (t *whyTool) StartTests(context.Context, string, string) (gotool.TestProcess, error) {
+func (t *whyTool) StartTests(context.Context, string, string, ...string) (gotool.TestProcess, error) {
 	return nil, fmt.Errorf("unexpected StartTests")
 }
 

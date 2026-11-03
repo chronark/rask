@@ -50,7 +50,7 @@ func newShellTool() *shellTool {
 }
 
 // StartTests returns a shell process that would leak a grandchild without group kill.
-func (s *shellTool) StartTests(ctx context.Context, moduleDir string, _ string) (gotool.TestProcess, error) {
+func (s *shellTool) StartTests(ctx context.Context, moduleDir string, _ string, _ ...string) (gotool.TestProcess, error) {
 	command := exec.CommandContext(ctx, "/bin/sh", "-c", `sleep 60 & echo "$$ $!"; wait`)
 	command.Dir = moduleDir
 	command.WaitDelay = time.Second

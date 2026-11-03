@@ -19,6 +19,7 @@ import (
 	"github.com/chronark/rask/internal/gotool"
 	"github.com/chronark/rask/internal/run"
 	"github.com/chronark/rask/internal/setup"
+	"github.com/chronark/rask/internal/testtrace"
 )
 
 const (
@@ -51,6 +52,7 @@ type testCommand struct {
 	noCache      bool
 	concurrency  int
 	junitFile    string
+	traces       *testtrace.Reporter
 	frontend     *frontend.Frontend
 	executor     suiteExecutor
 	events       chan<- frontend.Event
@@ -128,7 +130,19 @@ func Action(ctx context.Context, command *cli.Command) error {
 		environment.ExitCode = 1
 		return err
 	}
-	code, err := runTest(ctx, environment.Tool, cfg, parsed, environment.Frontend, environment.Events)
+	token := os.Getenv("RASK_AXIOM_TRACE_TOKEN")
+	if token == "" {
+		token = os.Getenv("RASK_AXIOM_TOKEN")
+	}
+	traces, traceErr := testtrace.New(testtrace.Config{
+		Dataset: os.Getenv("RASK_AXIOM_DATASET"), Token: token,
+		Endpoint: os.Getenv("RASK_AXIOM_ENDPOINT"),
+	}, environment.Stderr)
+	if traceErr != nil {
+		fmt.Fprintf(environment.Stderr, "rask: tracing disabled: %v\n", traceErr)
+	}
+	defer traces.Close()
+	code, err := runTest(ctx, environment.Tool, cfg, parsed, environment.Frontend, environment.Events, traces)
 	environment.ExitCode = code
 	return err
 }
@@ -164,6 +178,7 @@ func runTest(
 	parsed testArguments,
 	ui *frontend.Frontend,
 	events chan<- frontend.Event,
+	traces *testtrace.Reporter,
 ) (int, error) {
 	userDir, err := os.Getwd()
 	if err != nil {
@@ -182,6 +197,7 @@ func runTest(
 		return 1, err
 	}
 	command := newTestCommand(ctx, tool, module, userDir, resultCache, parsed, ui, events)
+	command.traces = traces
 	return command.run()
 }
 
@@ -368,6 +384,7 @@ func (c *testCommand) tryCacheHit(suite fingerprint.Suite, outcome *suiteOutcome
 func (c *testCommand) executeSuite(suite fingerprint.Suite) run.SuiteResult {
 	task := run.SuiteTask{Package: suite.Package, Digest: suite.Digest}
 	return c.executor.Execute(c.runCtx, task, run.Hooks{
+		Traces: c.traces,
 		Started: func() {
 			c.events <- frontend.Event{Kind: frontend.EventStarted, ImportPath: suite.Package.ImportPath}
 		},

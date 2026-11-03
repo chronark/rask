@@ -205,7 +205,7 @@ func (t cleanTool) ListTests(context.Context, string, string) ([]string, error) 
 	return nil, nil
 }
 
-func (t cleanTool) StartTests(context.Context, string, string) (gotool.TestProcess, error) {
+func (t cleanTool) StartTests(context.Context, string, string, ...string) (gotool.TestProcess, error) {
 	return nil, fmt.Errorf("unexpected StartTests")
 }
 

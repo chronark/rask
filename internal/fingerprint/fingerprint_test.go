@@ -369,6 +369,6 @@ func (f *fakeTool) ListTests(context.Context, string, string) ([]string, error) 
 }
 
 // StartTests fails because fingerprinting never starts test processes.
-func (f *fakeTool) StartTests(context.Context, string, string) (gotool.TestProcess, error) {
+func (f *fakeTool) StartTests(context.Context, string, string, ...string) (gotool.TestProcess, error) {
 	return nil, fmt.Errorf("unexpected StartTests call")
 }

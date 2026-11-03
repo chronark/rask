@@ -20,6 +20,7 @@ import (
 
 	"github.com/chronark/rask/internal/assert"
 	"github.com/chronark/rask/internal/gotool"
+	"github.com/chronark/rask/internal/testtrace"
 )
 
 const (
@@ -140,6 +141,8 @@ type Progress struct {
 
 // Hooks keeps lifecycle side effects caller-owned while Execute stays synchronous.
 type Hooks struct {
+	Traces *testtrace.Reporter
+
 	// Started fires only after a child process exists, so callers can mark real work.
 	Started func()
 
@@ -165,16 +168,11 @@ func newExecutor(tool gotool.Tool, moduleDir string, stallAfter time.Duration) *
 }
 
 // testEvent keeps the decoder narrow so unknown JSON fields cannot affect folding.
-type testEvent struct {
-	Action  string
-	Package string
-	Test    string
-	Output  string
-	Elapsed float64
-}
+type testEvent = testtrace.Event
 
 // suiteState accumulates JSON events until a [SuiteResult] can be built.
 type suiteState struct {
+	traces                 *testtrace.Package
 	suite                  SuiteTask
 	testNames              []string
 	outcomes               map[string]TestOutcome
@@ -200,12 +198,14 @@ type suiteState struct {
 // cancellation were used to classify the kill, a stalled suite would fold as
 // Killed (silently skipped by callers) instead of Failed with a named stall
 // error — hiding exactly the hang the watchdog exists to expose.
-func (e *Executor) Execute(callerCtx context.Context, suite SuiteTask, hooks Hooks) SuiteResult {
+func (e *Executor) Execute(callerCtx context.Context, suite SuiteTask, hooks Hooks) (result SuiteResult) {
 	processCtx, cancel := context.WithCancel(callerCtx)
 	defer cancel()
 	total, totalKnown := e.listSuiteTests(processCtx, suite)
 	state := newSuiteState(suite, total, totalKnown, hooks.Progress)
-	process, err := e.tool.StartTests(processCtx, e.moduleDir, suite.Package.ImportPath)
+	state.traces = hooks.Traces.StartPackage(suite.Package.ImportPath)
+	defer func() { state.traces.Finish(result.Failed, result.Killed) }()
+	process, err := e.tool.StartTests(processCtx, e.moduleDir, suite.Package.ImportPath, state.traces.Environment()...)
 	if err != nil {
 		if errors.Is(callerCtx.Err(), context.Canceled) {
 			return SuiteResult{Package: suite.Package, Digest: suite.Digest, Killed: true}
@@ -412,6 +412,10 @@ func finishSuiteResult(ctx context.Context, state *suiteState, waitErr error, st
 
 // applyEvent routes one JSON event and reports whether progress changed.
 func (s *suiteState) applyEvent(ev testEvent) bool {
+	s.traces.Observe(ev)
+	if testtrace.IsIdentityOutput(ev.Output) {
+		return false
+	}
 	if ev.Test == "" {
 		s.applyPackageEvent(ev)
 		return false

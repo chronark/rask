@@ -346,6 +346,6 @@ func (f *fakeTool) ListTests(context.Context, string, string) ([]string, error) 
 }
 
 // StartTests fails because discovery must stay before process execution.
-func (f *fakeTool) StartTests(context.Context, string, string) (gotool.TestProcess, error) {
+func (f *fakeTool) StartTests(context.Context, string, string, ...string) (gotool.TestProcess, error) {
 	return nil, fmt.Errorf("unexpected StartTests call")
 }
