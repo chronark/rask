@@ -264,6 +264,17 @@ func (c *testCommand) run() (int, error) {
 	if err := c.resultCache.Prune(); err != nil {
 		summary.CacheErrors++
 	}
+	c.traces.FinishRun(testtrace.RunSummary{
+		Started:      c.startedAt,
+		CacheEnabled: !c.noCache,
+		Suites:       summary.Suites,
+		Cached:       summary.Cached,
+		RemoteCached: summary.RemoteCached,
+		RemoteWrites: summary.RemoteWrites,
+		Skipped:      summary.Skipped,
+		Failed:       len(summary.FailedSuites) > 0,
+		Interrupted:  summary.Interrupted,
+	})
 	c.events <- frontend.Event{Kind: frontend.EventSummary, Summary: summary}
 	close(c.events)
 	<-c.frontendDone

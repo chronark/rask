@@ -78,6 +78,15 @@ executions have distinct span IDs. Cached tests produce no execution spans.
 Test spans are direct children of the package span because Go test names do not
 reliably encode the subtest parent relationship.
 
+Each invocation also exports one `rask run` span with the `rask.run` scope in
+its own trace. It counts planned, executed, cached, remote-cached, and skipped
+suites, so cache hits are visible even though they have no execution spans.
+
+Rask adds `OTEL_RESOURCE_ATTRIBUTES` to the resource of every span, for example
+the commit SHA and CI run ID. Values use the OpenTelemetry format and must be
+percent-encoded. `service.name` is always `rask`. A malformed value disables
+tracing for the run.
+
 Instrumented tests receive the package context in `RASK_TRACEPARENT` only during
 execution, not during test enumeration. A helper can allocate a test span ID in
 that trace and announce its W3C traceparent with

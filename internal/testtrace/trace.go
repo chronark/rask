@@ -94,11 +94,17 @@ func New(cfg Config, warnings io.Writer) (*Reporter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating trace exporter: %w", err)
 	}
+	// OTEL_SERVICE_NAME cannot rename these spans because queries select them by service.
+	res, err := resource.New(context.Background(), resource.WithFromEnv(),
+		resource.WithAttributes(attribute.String("service.name", "rask")))
+	if err != nil {
+		return nil, fmt.Errorf("parsing OTEL_RESOURCE_ATTRIBUTES: %w", err)
+	}
 	reporting := &reportingExporter{SpanExporter: exporter}
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithIDGenerator(assignedIDs{}),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
-		sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", "rask"))),
+		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(reporting, sdktrace.WithBatchTimeout(100*time.Millisecond),
 			sdktrace.WithMaxQueueSize(8192), sdktrace.WithExportTimeout(time.Second)),
 	)
@@ -115,6 +121,48 @@ func (r *Reporter) Close() {
 	if err != nil || r.exporter.failed.Load() || r.limited.Load() {
 		fmt.Fprintln(r.warnings, "rask: trace report is incomplete (export failed or tracing limit reached); test results are unchanged")
 	}
+}
+
+// RunSummary counts suites for one rask invocation, including cached suites
+// that have no package span.
+type RunSummary struct {
+	Started      time.Time
+	CacheEnabled bool
+	Suites       int
+	Cached       int
+	RemoteCached int
+	RemoteWrites int
+	Skipped      int
+	Failed       bool
+	Interrupted  bool
+}
+
+// FinishRun exports one root span in its own trace with the run's cache counts.
+func (r *Reporter) FinishRun(summary RunSummary) {
+	if r == nil {
+		return
+	}
+	outcome := "pass"
+	if summary.Failed {
+		outcome = "fail"
+	} else if summary.Interrupted {
+		outcome = "interrupted"
+	}
+	_, span := r.provider.Tracer("rask.run").Start(context.Background(), "rask run",
+		trace.WithTimestamp(summary.Started), trace.WithAttributes(
+			attribute.String("run.outcome", outcome),
+			attribute.Bool("run.cache.enabled", summary.CacheEnabled),
+			attribute.Int("run.suites", summary.Suites),
+			attribute.Int("run.suites.executed", summary.Suites-summary.Cached-summary.Skipped),
+			attribute.Int("run.suites.cached", summary.Cached),
+			attribute.Int("run.suites.cached_remote", summary.RemoteCached),
+			attribute.Int("run.suites.skipped", summary.Skipped),
+			attribute.Int("run.cache.remote_writes", summary.RemoteWrites),
+		))
+	if summary.Failed {
+		span.SetStatus(codes.Error, "run failed")
+	}
+	span.End()
 }
 
 func (r *Reporter) StartPackage(name string) *Package {

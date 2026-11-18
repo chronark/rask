@@ -17,20 +17,41 @@ import (
 
 func TestAxiomReportsOnlyExecutedSuites(t *testing.T) {
 	capture, env := captureTraces(t, "test-traces")
+	env["OTEL_RESOURCE_ATTRIBUTES"] = "vcs.ref.head.revision=abc123,service.name=ignored"
+	env["OTEL_SERVICE_NAME"] = "ignored"
 	module := scaffoldModule(t, packageSpec{name: "passing", test: testPass})
 	assertCode(t, runRask(t, module.dir, env), 0)
 	spans := capture.take()
-	if len(spans) != 2 {
-		t.Fatalf("got %d spans, want one package and one test", len(spans))
+	executions, run := splitRunSpan(t, spans)
+	if len(executions) != 2 {
+		t.Fatalf("got %d execution spans, want one package and one test", len(executions))
 	}
 	for _, span := range spans {
 		if span.StartTimeUnixNano == 0 || span.EndTimeUnixNano < span.StartTimeUnixNano {
-			t.Fatalf("invalid span timestamps: %v", span)
+			t.Fatalf("invalid span timestamps: %v", span.Span)
+		}
+		if span.resource["service.name"] != "rask" || span.resource["vcs.ref.head.revision"] != "abc123" {
+			t.Fatalf("span %q has resource %v", span.Name, span.resource)
 		}
 	}
+	assertRunCounts(t, run, map[string]int64{"run.suites": 1, "run.suites.executed": 1, "run.suites.cached": 0})
 	assertCode(t, runRask(t, module.dir, env), 0)
-	if len(capture.take()) != 0 {
+	executions, run = splitRunSpan(t, capture.take())
+	if len(executions) != 0 {
 		t.Fatal("cached suites must not export fresh execution spans")
+	}
+	assertRunCounts(t, run, map[string]int64{"run.suites": 1, "run.suites.executed": 0, "run.suites.cached": 1})
+}
+
+func TestAxiomRejectsMalformedResourceAttributes(t *testing.T) {
+	capture, env := captureTraces(t, "test-traces")
+	env["OTEL_RESOURCE_ATTRIBUTES"] = "missing-separator"
+	module := scaffoldModule(t, packageSpec{name: "passing", test: testPass})
+	result := runRask(t, module.dir, env)
+	assertCode(t, result, 0)
+	assertContains(t, result.stderr, "tracing disabled")
+	if spans := capture.take(); len(spans) != 0 {
+		t.Fatalf("got %d spans after rejecting the resource", len(spans))
 	}
 }
 
@@ -41,8 +62,8 @@ func TestAxiomDefaultsToRaskTraces(t *testing.T) {
 	env["RASK_AXIOM_TOKEN"] = "unused-token"
 	module := scaffoldModule(t, packageSpec{name: "passing", test: testPass})
 	assertCode(t, runRask(t, module.dir, env), 0)
-	if spans := capture.take(); len(spans) != 2 {
-		t.Fatalf("got %d spans, want package and test with the default dataset", len(spans))
+	if executions, _ := splitRunSpan(t, capture.take()); len(executions) != 2 {
+		t.Fatalf("got %d spans, want package and test with the default dataset", len(executions))
 	}
 }
 
@@ -88,15 +109,15 @@ func TestScopes(t *testing.T) {
 `)
 	result := runRask(t, module.dir, env, "--x-junit-file", "junit.xml")
 	assertCode(t, result, 0)
-	spans := capture.take()
+	spans, _ := splitRunSpan(t, capture.take())
 	if len(spans) != 9 {
 		t.Fatalf("got %d spans, want package plus four tests on each CPU setting", len(spans))
 	}
-	byID := make(map[string]*tracepb.Span)
-	var packageSpan *tracepb.Span
+	byID := make(map[string]capturedSpan)
+	var packageSpan capturedSpan
 	for _, span := range spans {
 		id := hex.EncodeToString(span.SpanId)
-		if byID[id] != nil {
+		if byID[id].Span != nil {
 			t.Fatal("repeated execution reused a span ID")
 		}
 		byID[id] = span
@@ -105,8 +126,8 @@ func TestScopes(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(claimsDir)
-	if err != nil || len(entries) != 4 || packageSpan == nil {
-		t.Fatalf("claims=%d package=%v err=%v", len(entries), packageSpan, err)
+	if err != nil || len(entries) != 4 || packageSpan.Span == nil {
+		t.Fatalf("claims=%d package=%v err=%v", len(entries), packageSpan.Span, err)
 	}
 	for _, entry := range entries {
 		name, err := os.ReadFile(filepath.Join(claimsDir, entry.Name()))
@@ -114,7 +135,7 @@ func TestScopes(t *testing.T) {
 			t.Fatal(err)
 		}
 		span := byID[entry.Name()]
-		if span == nil || span.Name != string(name) || hex.EncodeToString(span.ParentSpanId) != hex.EncodeToString(packageSpan.SpanId) {
+		if span.Span == nil || span.Name != string(name) || hex.EncodeToString(span.ParentSpanId) != hex.EncodeToString(packageSpan.SpanId) {
 			t.Fatalf("claim %s for %s did not become the matching test span", entry.Name(), name)
 		}
 		if hex.EncodeToString(span.TraceId) != hex.EncodeToString(packageSpan.TraceId) {
@@ -130,7 +151,44 @@ func TestScopes(t *testing.T) {
 
 type traceCapture struct {
 	mu    sync.Mutex
-	spans []*tracepb.Span
+	spans []capturedSpan
+}
+
+type capturedSpan struct {
+	*tracepb.Span
+	scope    string
+	resource map[string]string
+}
+
+// splitRunSpan separates the single per-invocation summary from execution spans.
+func splitRunSpan(t *testing.T, spans []capturedSpan) ([]capturedSpan, capturedSpan) {
+	t.Helper()
+	var executions []capturedSpan
+	var runs []capturedSpan
+	for _, span := range spans {
+		if span.scope == "rask.run" {
+			runs = append(runs, span)
+		} else {
+			executions = append(executions, span)
+		}
+	}
+	if len(runs) != 1 {
+		t.Fatalf("got %d run spans, want 1", len(runs))
+	}
+	return executions, runs[0]
+}
+
+func assertRunCounts(t *testing.T, run capturedSpan, want map[string]int64) {
+	t.Helper()
+	got := make(map[string]int64)
+	for _, attribute := range run.Attributes {
+		got[attribute.Key] = attribute.Value.GetIntValue()
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("run span %s = %d, want %d (attributes %v)", key, got[key], value, got)
+		}
+	}
 }
 
 func captureTraces(t *testing.T, dataset string) (*traceCapture, map[string]string) {
@@ -151,9 +209,15 @@ func captureTraces(t *testing.T, dataset string) (*traceCapture, map[string]stri
 			return
 		}
 		capture.mu.Lock()
-		for _, resource := range request.ResourceSpans {
-			for _, scope := range resource.ScopeSpans {
-				capture.spans = append(capture.spans, scope.Spans...)
+		for _, resourceSpans := range request.ResourceSpans {
+			resource := make(map[string]string)
+			for _, attribute := range resourceSpans.Resource.GetAttributes() {
+				resource[attribute.Key] = attribute.Value.GetStringValue()
+			}
+			for _, scope := range resourceSpans.ScopeSpans {
+				for _, span := range scope.Spans {
+					capture.spans = append(capture.spans, capturedSpan{Span: span, scope: scope.Scope.GetName(), resource: resource})
+				}
 			}
 		}
 		capture.mu.Unlock()
@@ -168,7 +232,7 @@ func captureTraces(t *testing.T, dataset string) (*traceCapture, map[string]stri
 	return capture, env
 }
 
-func (c *traceCapture) take() []*tracepb.Span {
+func (c *traceCapture) take() []capturedSpan {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	spans := c.spans
